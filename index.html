@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f4f6f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e1116" media="(prefers-color-scheme: dark)">
+  <meta name="description" content="Reto de peso: registra tu pesada diaria con foto en vivo, compara tu avance con el resto y verifica los registros de los demás.">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Reto">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="format-detection" content="telephone=no">
+
+  <title>Reto de peso</title>
+
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='%230e6f52'%3E%3Crect x='29' y='8' width='6' height='26' rx='3'/%3E%3Cpath d='M32 44 18.5 28h27L32 44z'/%3E%3Crect x='12' y='50' width='40' height='8' rx='4'/%3E%3C/svg%3E" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="img/icono.svg">
+  <link rel="stylesheet" href="css/estilos.css">
+</head>
+<body>
+
+  <noscript>
+    <div class="error" id="sin-js">
+      <p><strong>Esta aplicación necesita JavaScript.</strong></p>
+      <p>El navegador lo tiene desactivado, así que no se puede iniciar sesión ni registrar la pesada del día.</p>
+      <p>Actívalo en los ajustes del navegador y vuelve a cargar la página. Si estás en modo de navegación restringida o con un bloqueador estricto, prueba abrir el enlace en Chrome o Safari normal.</p>
+    </div>
+  </noscript>
+
+  <div id="pantalla-carga" class="cargando" role="status" aria-live="polite">
+    <span>Cargando el reto…</span>
+  </div>
+
+  <div class="app">
+
+    <header class="cab" id="cab">
+      <h1 class="cab__titulo" id="cab-titulo">Reto de peso</h1>
+      <div class="cab__usuario" id="cab-usuario"></div>
+      <button class="boton boton--fantasma oculto" id="btn-salir" type="button">Salir</button>
+    </header>
+
+    <nav class="nav" id="nav" aria-label="Secciones del reto">
+      <a class="nav__link" data-ruta="hoy" href="#/hoy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M8 3v3M16 3v3M3.5 9.5h17M9 14.8l2 2 4-4"/></svg>
+        <span>Hoy</span>
+      </a>
+      <a class="nav__link" data-ruta="tablero" href="#/tablero">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 20V11M12 20V4M19 20v-6"/></svg>
+        <span>Tablero</span>
+      </a>
+      <a class="nav__link" data-ruta="historial" href="#/historial">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+        <span>Historial</span>
+      </a>
+      <a class="nav__link" data-ruta="yo" href="#/yo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20c1.6-3.6 4.1-5.4 7.4-5.4s5.8 1.8 7.4 5.4"/></svg>
+        <span>Yo</span>
+      </a>
+      <a class="nav__link" data-ruta="admin" href="#/admin">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="9" cy="17" r="2"/></svg>
+        <span>Admin</span>
+      </a>
+    </nav>
+
+    <main class="vista" id="vista" tabindex="-1"></main>
+
+    <footer class="pie" id="pie">
+      <p>
+        <span id="pie-version">Versión 1.0.0</span>
+        <span aria-hidden="true">·</span>
+        <a id="pie-ayuda" href="#/ayuda">Cómo funciona</a>
+      </p>
+    </footer>
+
+  </div>
+
+  <div class="avisos" id="avisos" aria-live="assertive" aria-atomic="false"></div>
+
+  <div class="modal oculto" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-titulo">
+    <div class="modal__fondo" data-cerrar="modal"></div>
+    <div class="modal__caja">
+      <button class="modal__cerrar" id="modal-cerrar" type="button" data-cerrar="modal" aria-label="Cerrar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+      <h2 class="tarjeta__titulo" id="modal-titulo"></h2>
+      <div id="modal-cuerpo"></div>
+    </div>
+  </div>
+
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="js/config.js"></script>
+  <script src="js/util.js"></script>
+  <script src="js/graficos.js"></script>
+  <script src="js/camara.js"></script>
+  <script src="js/demo.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/app.js"></script>
+
+</body>
+</html>

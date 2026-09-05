@@ -1,0 +1,23 @@
+{
+  "name": "Reto de peso",
+  "short_name": "Reto",
+  "description": "Registra tu pesada diaria con foto en vivo, compara tu avance y verifica los registros del resto.",
+  "lang": "es",
+  "dir": "ltr",
+  "id": "reto-peso",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f6f8",
+  "theme_color": "#f4f6f8",
+  "categories": ["health", "fitness", "lifestyle"],
+  "icons": [
+    {
+      "src": "img/icono.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any"
+    }
+  ]
+}
