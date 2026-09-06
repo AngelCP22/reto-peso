@@ -159,7 +159,10 @@
     { clave: 'RETO_NOMBRE', etiqueta: 'Nombre del reto', tipo: 'texto' },
     { clave: 'FECHA_INICIO', etiqueta: 'Fecha de inicio', tipo: 'fecha' },
     { clave: 'FECHA_FIN', etiqueta: 'Fecha de fin', tipo: 'fecha' },
-    { clave: 'ZONA_HORARIA', etiqueta: 'Zona horaria', tipo: 'texto' },
+    // ZONA_HORARIA no se ofrece: el backend la saco de su lista blanca porque es
+    // la unica fuente de "hoy", y quien pueda moverla adelanta el dia y conoce
+    // la pose de mañana sin la semilla. Ofrecerla aqui solo producia un
+    // DATOS_INVALIDOS confuso. Se cambia desde el instalador.
     { clave: 'VENTANA_MOVIL_DIAS', etiqueta: 'Días del promedio móvil', tipo: 'entero' },
     { clave: 'MIN_DATOS_PROMEDIO', etiqueta: 'Mínimo de datos para el promedio', tipo: 'entero' },
     { clave: 'DIA_PESADA_OFICIAL', etiqueta: 'Día de la pesada oficial (1 = lunes)', tipo: 'entero' },
