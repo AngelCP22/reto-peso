@@ -2492,6 +2492,7 @@
       filaDato('Cintura inicial', numero(yo.cinturaInicialCm) === null
         ? null : fmtNum(yo.cinturaInicialCm, 1) + ' cm'),
       filaDato('Altura', numero(yo.alturaCm) === null ? null : fmtNum(yo.alturaCm, 0) + ' cm'),
+      filaDato('Edad', numero(yo.edad) === null ? null : fmtNum(yo.edad, 0) + ' años'),
       filaDato('En el reto desde', yo.fechaAlta ? fmtFecha(yo.fechaAlta) : null)
     ]);
     vista.appendChild(tarjeta('Mis datos', [rejilla], [
@@ -2709,6 +2710,15 @@
     });
     cuerpo.push(campos.altura.caja);
 
+    campos.edad = crearCampo({
+      id: 'campo-p-edad',
+      etiqueta: 'Edad en años',
+      tipo: 'number',
+      ayuda: 'Opcional. Es solo un dato de referencia: no afecta al ranking.',
+      atributos: { inputmode: 'numeric', step: '1' }
+    });
+    cuerpo.push(campos.edad.caja);
+
     var check = crearCheck('campo-p-activo', 'Activo en el reto (puede entrar)', true);
     cuerpo.push(el('div', { clase: 'grupo-check' }, check.caja));
 
@@ -2766,6 +2776,8 @@
         if (cintura !== null) envio.cinturaInicialCm = cintura;
         var altura = numero(campos.altura.control.value);
         if (altura !== null) envio.alturaCm = altura;
+        var edad = numero(campos.edad.control.value);
+        if (edad !== null) envio.edad = edad;
 
         var res = await Api.guardarParticipante(envio);
         if (!vigente(gen)) return;
@@ -2783,7 +2795,8 @@
           pesoInicialKg: campos.peso,
           metaKg: campos.meta,
           cinturaInicialCm: campos.cintura,
-          alturaCm: campos.altura
+          alturaCm: campos.altura,
+          edad: campos.edad
         };
         if (campoMalo && mapa[campoMalo]) mapa[campoMalo].marcar(textoError(err));
         avisoError(textoError(err));
