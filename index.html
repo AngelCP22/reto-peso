@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#f4f6f8" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0e1116" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f5f5ef" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#111a17" media="(prefers-color-scheme: dark)">
   <meta name="description" content="Reto de peso: registra tu pesada diaria con foto en vivo, compara tu avance con el resto y verifica los registros de los demás.">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -17,9 +17,10 @@
   <title>Reto de peso</title>
 
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='%230e6f52'%3E%3Crect x='29' y='8' width='6' height='26' rx='3'/%3E%3Cpath d='M32 44 18.5 28h27L32 44z'/%3E%3Crect x='12' y='50' width='40' height='8' rx='4'/%3E%3C/svg%3E" type="image/svg+xml">
+  <link rel="icon" href="img/icono.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="img/icono.svg">
   <link rel="stylesheet" href="css/estilos.css">
+  <link rel="stylesheet" href="css/diseno.css">
 </head>
 <body>
 
@@ -38,6 +39,7 @@
   <div class="app">
 
     <header class="cab" id="cab">
+      <svg class="marca" viewBox="0 0 40 40" fill="none" aria-hidden="true" focusable="false"><rect width="40" height="40" rx="12" fill="currentColor"/><path d="M11 12h18v16H11zM15 17h10M20 14v6m-5 4h10" stroke="var(--c-sobre-primario)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <h1 class="cab__titulo" id="cab-titulo">Reto de peso</h1>
       <div class="cab__usuario" id="cab-usuario"></div>
       <button class="boton boton--fantasma oculto" id="btn-salir" type="button">Salir</button>
@@ -66,6 +68,13 @@
       </a>
     </nav>
 
+    <section class="encabezado-reto" aria-label="Resumen de la sección">
+      <div class="encabezado-reto__tablero"><p class="antetitulo">EL RETO, CON DATOS</p><h2>Así va la competencia.</h2><p>Porcentaje perdido. Promedio de 7 días. Las mismas reglas para todos.</p></div>
+      <div class="encabezado-reto__hoy"><p class="antetitulo">TU REGISTRO DIARIO</p><h2>Hoy cuenta.</h2><p>Lee tu pose, pésate y deja la evidencia.</p></div>
+      <div class="encabezado-reto__historial"><p class="antetitulo">EVIDENCIA COMPARTIDA</p><h2>Cada registro, a la vista.</h2><p>Compara la pose con la foto y revisa la pesada.</p></div>
+      <div class="encabezado-reto__yo"><p class="antetitulo">TU PROGRESO</p><h2>Los números de tu constancia.</h2><p>Tu evolución y las condiciones de cada pesada.</p></div>
+      <div class="encabezado-reto__admin"><p class="antetitulo">ADMINISTRACIÓN</p><h2>Las reglas, en orden.</h2><p>Participantes, configuración y revisión de registros.</p></div>
+    </section>
     <main class="vista" id="vista" tabindex="-1"></main>
 
     <footer class="pie" id="pie">
