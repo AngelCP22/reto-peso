@@ -27,15 +27,42 @@
   var MS_LIMITE = 30000;
   // registrar sube dos o cuatro fotos: necesita mas aire que una lectura.
   var MS_LIMITE_REGISTRAR = 60000;
+  // probarAvisos arma el resumen de la semana y ademas sale a enviar un correo:
+  // tarda mucho mas que una lectura y, por ser una escritura con efecto
+  // externo, no se reintenta nunca. Cortarla por tiempo cuando el correo si
+  // salio es el peor final posible, asi que se le da el mismo aire que a
+  // registrar en vez de los 30 s de una lectura.
+  var MS_LIMITE_AVISOS = 60000;
 
-  // Reintentos: solo fallos de transporte, y jamas en registrar.
+  // Tiempo limite propio de las rutas lentas. El resto usa MS_LIMITE.
+  var LIMITES_MS = {
+    registrar: MS_LIMITE_REGISTRAR,
+    probarAvisos: MS_LIMITE_AVISOS
+  };
+
+  // Reintentos: solo fallos de transporte, y jamas en las rutas de SIN_REINTENTO.
   var MAX_REINTENTOS = 2;
   var ESPERAS_MS = [700, 1800];
 
-  // Cache en memoria muy corto, solo para las dos rutas de lectura que las
-  // vistas piden repetidas veces al navegar entre pestanas.
+  // Escrituras que NUNCA se repiten solas, aunque el fallo sea de transporte.
+  // Las dos tienen el mismo problema: si el primer envio llego y solo se perdio
+  // la respuesta, repetirlo produce un efecto real duplicado —una fila de mas o
+  // una foto quemada en registrar, un correo de mas en probarAvisos—. Ante la
+  // duda decide la persona, no un reintento automatico.
+  var SIN_REINTENTO = { registrar: true, probarAvisos: true };
+
+  // Cache en memoria muy corto, solo para las rutas de lectura que las vistas
+  // piden repetidas veces al navegar entre pestanas.
+  //
+  // informeSemanal entra al cache, y esta es la razon: es una lectura pura,
+  // sale de los mismos registros que resumen y la vista del tablero la pide
+  // cada vez que se vuelve a ella. Su ventana es de 7 dias, asi que 30 s de
+  // desfase no cambian ni un numero visible. Y lo que si cambia el informe
+  // —registrar, verificar, anular o configurar— ya vacia este cache al
+  // terminar, porque todas esas rutas estan en RUTAS_QUE_INVALIDAN: no hay
+  // forma de quedarse mirando un informe viejo despues de escribir.
   var MS_CACHE = 30000;
-  var RUTAS_CACHEABLES = { resumen: true, participantes: true };
+  var RUTAS_CACHEABLES = { resumen: true, participantes: true, informeSemanal: true };
 
   // Rutas que no necesitan token. `salud` prueba el despliegue; `arranque`
   // entrega la configuracion publica del backend (entre ella el Client ID de
@@ -44,7 +71,13 @@
   var RUTAS_PUBLICAS = { salud: true, arranque: true };
 
   // Rutas de escritura: al terminar bien invalidan el cache de lectura, porque
-  // el ranking y la lista de participantes acaban de cambiar.
+  // el ranking, el informe de la semana y la lista de participantes acaban de
+  // cambiar.
+  //
+  // probarAvisos NO esta aqui a proposito: escribe (manda un correo y deja
+  // rastro en Auditoria) pero no toca ni un dato de los que pintan el tablero,
+  // el informe o la lista. Vaciar el cache por ese envio obligaria a bajar
+  // otra vez todo el resumen sin que hubiera cambiado nada.
   var RUTAS_QUE_INVALIDAN = {
     registrar: true,
     verificar: true,
@@ -105,12 +138,21 @@
     TIEMPO_LIMITE: 'El servidor tardó demasiado al guardar tu registro. Revisa la pantalla de hoy antes de volver a enviarlo, por si ya quedó guardado.'
   };
 
+  // Mismo caso en probarAvisos: el correo pudo salir y perderse solo la
+  // respuesta, asi que el texto pide mirar la bandeja antes de repetir en vez
+  // de invitar a pulsar otra vez.
+  var TEXTOS_ERROR_AVISOS = {
+    SIN_CONEXION: 'Se perdió la conexión mientras se pedía el correo de prueba. Revisa tu bandeja de entrada antes de volver a pedirlo, por si ya salió.',
+    TIEMPO_LIMITE: 'El servidor tardó demasiado al preparar el correo de prueba. Revisa tu bandeja de entrada antes de volver a pedirlo, por si ya salió.'
+  };
+
   // Codigos donde gana el mensaje concreto por encima de la tabla de arriba,
   // porque el detalle util vive en el mensaje y no en el codigo:
   //   DATOS_INVALIDOS  el servidor nombra el campo y el rango que fallo.
   //   ERROR_INTERNO    aqui viaja la pista de despliegue mal publicado.
   //   SIN_CONFIGURAR   dice exactamente que falta pegar.
-  //   SIN_CONEXION     en registrar avisa de revisar antes de repetir.
+  //   SIN_CONEXION     en registrar y en probarAvisos avisa de revisar antes
+  //                    de repetir, porque el envio pudo haber llegado.
   //   TIEMPO_LIMITE    igual que el anterior.
   // Para el resto gana la tabla: su texto ya esta escrito para el usuario y no
   // depende de como redacte el backend.
@@ -258,6 +300,9 @@
     if (ruta === 'registrar' && TEXTOS_ERROR_REGISTRAR[codigo]) {
       return TEXTOS_ERROR_REGISTRAR[codigo];
     }
+    if (ruta === 'probarAvisos' && TEXTOS_ERROR_AVISOS[codigo]) {
+      return TEXTOS_ERROR_AVISOS[codigo];
+    }
     return TEXTOS_ERROR[codigo] || TEXTO_GENERICO;
   }
 
@@ -362,7 +407,7 @@
    * fallo; si vuelve, vuelve con los datos buenos de la ruta.
    */
   async function peticion(ruta, datos) {
-    var limite = ruta === 'registrar' ? MS_LIMITE_REGISTRAR : MS_LIMITE;
+    var limite = LIMITES_MS[ruta] || MS_LIMITE;
     var controlador = new AbortController();
     var vencido = false;
     var reloj = setTimeout(function () {
@@ -472,7 +517,15 @@
       throw new ErrorApi('RUTA_DESCONOCIDA', TEXTOS_ERROR.RUTA_DESCONOCIDA, null);
     }
 
-    if (esDemo()) return delegarDemo(nombre, datos);
+    // El modo demo tambien respeta RUTAS_QUE_INVALIDAN. Sin esto la demo
+    // guardaba en cache el tablero y el informe de la semana y no los soltaba
+    // hasta 30 s despues de registrar, asi que el doble de prueba se
+    // comportaba distinto del backend justo en lo que hay que validar con el.
+    if (esDemo()) {
+      var deLaDemo = await delegarDemo(nombre, datos);
+      if (RUTAS_QUE_INVALIDAN[nombre]) invalidar();
+      return deLaDemo;
+    }
 
     if (!estaConfigurado()) {
       throw new ErrorApi('SIN_CONFIGURAR', TEXTOS_ERROR.SIN_CONFIGURAR, null);
@@ -484,12 +537,14 @@
       throw new ErrorApi('NO_AUTENTICADO', TEXTOS_ERROR.NO_AUTENTICADO, null);
     }
 
-    // NUNCA se reintenta registrar. Es la unica escritura que puede duplicar la
-    // fila del dia o quemar la foto: si el primer envio llego y solo se perdio
-    // la respuesta, un segundo envio crearia un registro repetido o chocaria
-    // contra FOTO_DUPLICADA. Ante la duda, decide la persona desde la pantalla
-    // de hoy, no un reintento automatico.
-    var permitir = nombre !== 'registrar';
+    // NUNCA se reintentan registrar ni probarAvisos: son las dos escrituras con
+    // efecto real que un segundo envio duplicaria. En registrar, si el primero
+    // llego y solo se perdio la respuesta, repetirlo crea un registro repetido
+    // o choca contra FOTO_DUPLICADA. En probarAvisos, repetirlo manda un
+    // segundo correo y gasta cuota de MailApp para nada. Ante la duda, decide
+    // la persona —mirando la pantalla de hoy o su bandeja—, no un reintento
+    // automatico.
+    var permitir = !SIN_REINTENTO[nombre];
 
     var respuesta = await conReintentos(function () {
       return peticion(nombre, datos);
@@ -704,6 +759,51 @@
     return llamarConCache('resumen', {});
   }
 
+  /**
+   * informeSemanal() -> {retoNombre, fechaInicio, fechaFin, hoy, desde, hasta,
+   *                      lider, filas, sinRegistrar, cambioDeLider, usuarioId}
+   *
+   * Resumen de los ultimos 7 dias: el mismo que el backend arma con
+   * Metricas.resumenSemanal y que viaja por correo cuando los avisos estan
+   * encendidos. Lo puede pedir cualquier inscrito, observadores incluidos.
+   * `filas` trae, por persona, el porcentaje perdido del reto completo mas los
+   * datos de la semana (deltaSemanaKg, direccion, diasRegistrados, diasPosibles,
+   * adherenciaPct, registroHoy, diasSinRegistrar) y los de referencia (imc,
+   * imcClasificacion, kgSobreNormal). `usuarioId` es el id de quien pregunta,
+   * para marcar su propia fila sin una segunda llamada.
+   *
+   * De aqui no sale ninguna foto, ningun hash, ningun correo y NINGUNA pose: la
+   * pose del dia se revela solo por poseHoy.
+   *
+   * Lectura pura y cacheada 30 s, por lo explicado en RUTAS_CACHEABLES: cambia
+   * solo cuando alguien escribe, y toda escritura que la cambia vacia el cache.
+   *
+   * OJO al pintarlo: el IMC es un dato de referencia, no entra al ranking y no
+   * es un diagnostico. La vista tiene que decirlo y redactarlo como hecho
+   * ("estás a 2,2 kg del rango normal"), nunca como consejo de salud.
+   */
+  function informeSemanal() {
+    return llamarConCache('informeSemanal', {});
+  }
+
+  /**
+   * probarAvisos() -> {enviado, destinatario, cuotaRestante}
+   *
+   * Manda el correo de prueba del resumen a una sola direccion, la del dueno
+   * del script: no recibe destinatario y no hay forma de pedirle que escriba a
+   * otro lado. Es de admin y se dispara desde un boton de #/admin, con
+   * confirmacion.
+   *
+   * ESCRITURA CON EFECTO EXTERNO: sale un correo de verdad. Por eso NO se
+   * reintenta nunca —esta en SIN_REINTENTO, igual que registrar—, tiene tiempo
+   * limite largo y ante un fallo de transporte el texto pide revisar la bandeja
+   * antes de repetir, en vez de invitar a pulsar otra vez. No invalida el cache
+   * de lectura: no cambia ningun dato del tablero.
+   */
+  function probarAvisos() {
+    return llamar('probarAvisos', {});
+  }
+
   /** historial(f) -> {registros}. f = {participanteId?, desde?, hasta?, limite?}. */
   function historial(f) {
     return llamar('historial', objeto(f));
@@ -753,6 +853,7 @@
     poseHoy: poseHoy,
     registrar: registrar,
     resumen: resumen,
+    informeSemanal: informeSemanal,
     historial: historial,
     foto: foto,
     verificar: verificar,
@@ -760,6 +861,7 @@
     guardarParticipante: guardarParticipante,
     anularRegistro: anularRegistro,
     configurar: configurar,
+    probarAvisos: probarAvisos,
 
     invalidar: invalidar,
 

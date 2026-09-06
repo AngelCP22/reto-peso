@@ -48,6 +48,16 @@
   var LIMITE_HISTORIAL_MAX = 500;
   var NOTA_MAX = 280;
 
+  // Cupo diario de correos de una cuenta gratuita de Google. La demo no manda
+  // ni un correo: solo descuenta el de la prueba para que el numero se vea
+  // realista. Es fijo, asi que dos pasadas devuelven lo mismo.
+  var CUOTA_CORREO_DEMO = 100;
+
+  // Rango de edad aceptado, con los mismos numeros que Datos.gs. No significa
+  // nada: solo evita que un dedazo entre como dato bueno.
+  var EDAD_MIN = 10;
+  var EDAD_MAX = 110;
+
   var ANIMOS = ['bien', 'normal', 'mal'];
   var VEREDICTOS = ['ok', 'duda'];
   var ROLES = ['admin', 'participante', 'observador'];
@@ -61,6 +71,8 @@
     poseHoy: ['POSE_NO_ASIGNADA', 'Todavía no hay pose asignada para hoy. Vuelve a entrar en unos minutos.', null],
     registrar: ['DATOS_INVALIDOS', 'El peso no parece válido. Revísalo y vuelve a enviarlo.', 'pesoKg'],
     resumen: ['ERROR_INTERNO', 'No se pudo armar el tablero. Vuelve a intentarlo.', null],
+    informeSemanal: ['ERROR_INTERNO', 'No se pudo armar el resumen de la semana. Vuelve a intentarlo.', null],
+    probarAvisos: ['NO_AUTORIZADO', 'Solo el administrador puede enviarse el correo de prueba.', null],
     historial: ['LIMITE_TASA', 'Demasiadas consultas seguidas. Espera un minuto y vuelve a intentarlo.', null],
     foto: ['NO_AUTORIZADO', 'No tienes permiso para ver esta foto.', 'fotoId'],
     verificar: ['NO_AUTORIZADO', 'No puedes verificar este registro.', 'registroId'],
@@ -433,12 +445,53 @@
    */
 
   // Forma exacta de un objeto Metricas, en el mismo orden que lib_metricas.gs.
+  // Los nueve ultimos son datos de referencia agregados despues de la version
+  // 1.0.0: van al final para no mover de sitio a los que el frontend ya lee, y
+  // NINGUNO entra al ranking. compararMerito solo mira pctPerdido,
+  // adherenciaPct y kgPerdidos, y asi tiene que seguir.
   var CAMPOS_METRICAS = [
     'pesoActualSuavizado', 'pesoBase', 'kgPerdidos', 'pctPerdido',
     'avanceMetaPct', 'tasaSemanalPct', 'semaforoTasa', 'adherenciaPct',
     'racha', 'diasRegistrados', 'diasTranscurridos', 'cinturaActual',
-    'cinturaPerdidaCm', 'proyeccionMetaFecha', 'ultimaFecha', 'datosSuficientes'
+    'cinturaPerdidaCm', 'proyeccionMetaFecha', 'ultimaFecha', 'datosSuficientes',
+    'imc', 'imcClasificacion', 'imcBase', 'pesoMaxNormalKg', 'kgSobreNormal',
+    'tendencia', 'deltaSemanaKg', 'registroHoy', 'diasSinRegistrar'
   ];
+
+  // --- constantes del bloque de referencia (IMC y tendencia) -----------------
+  //
+  // Copiadas de lib_metricas.gs con los mismos valores. El IMC es tamizaje
+  // POBLACIONAL: clasifica como "sobrepeso" a gente muy musculada y no
+  // distingue grasa de musculo. Aqui se calcula porque es un dato util de
+  // referencia, no porque diga algo del reto ni de la salud de nadie.
+
+  // Fuera de este rango de altura no se calcula nada: un "17" o un "1760" mal
+  // tecleado daria un IMC absurdo con pinta de dato bueno.
+  var ALTURA_MIN_CM = 100;
+  var ALTURA_MAX_CM = 250;
+
+  // Techo del rango "normal" del catalogo de la OMS.
+  var IMC_MAX_NORMAL = 24.9;
+
+  // Cada tramo es [limite superior, etiqueta) y el ultimo recoge el resto. Los
+  // bordes exactos (18.5, 25, 30, 35, 40) pertenecen al tramo de arriba: 25 es
+  // "sobrepeso", no "normal".
+  var TRAMOS_IMC = [
+    { hasta: 18.5, etiqueta: 'bajo peso' },
+    { hasta: 25, etiqueta: 'normal' },
+    { hasta: 30, etiqueta: 'sobrepeso' },
+    { hasta: 35, etiqueta: 'obesidad grado 1' },
+    { hasta: 40, etiqueta: 'obesidad grado 2' }
+  ];
+  var ETIQUETA_IMC_MAXIMA = 'obesidad grado 3';
+
+  // La comparacion de la tendencia siempre es contra hace 7 dias, aunque
+  // VENTANA_MOVIL_DIAS sea otro numero: el campo se llama delta de la SEMANA.
+  var DIAS_SEMANA = 7;
+
+  // Error tipico de una balanza domestica: por debajo de esto no hay cambio,
+  // hay ruido, y se reporta "igual".
+  var UMBRAL_RUIDO_KG = 0.2;
 
   function normalizarSerie(serie) {
     if (!serie || typeof serie.length !== 'number') return [];
@@ -465,6 +518,59 @@
     return salida;
   }
 
+  /** Altura en metros, o null si falta o cae fuera del rango humano. */
+  function metrosDe(alturaCm) {
+    var a = numeroFinito(alturaCm);
+    if (a === null) return null;
+    if (a < ALTURA_MIN_CM || a > ALTURA_MAX_CM) return null;
+    return a / 100;
+  }
+
+  function pesoUtil(pesoKg) {
+    var p = numeroFinito(pesoKg);
+    return (p === null || p <= 0) ? null : p;
+  }
+
+  /** IMC = kg / m². null —nunca un numero absurdo— si falta peso o altura. */
+  function imc(pesoKg, alturaCm) {
+    var peso = pesoUtil(pesoKg);
+    if (peso === null) return null;
+    var metros = metrosDe(alturaCm);
+    if (metros === null) return null;
+    return redondear(peso / (metros * metros), 2);
+  }
+
+  /** Etiqueta del catalogo de la OMS, o null si no hay IMC que clasificar. */
+  function clasificacionImc(valorImc) {
+    var n = numeroFinito(valorImc);
+    if (n === null || n <= 0) return null;
+    for (var i = 0; i < TRAMOS_IMC.length; i++) {
+      if (n < TRAMOS_IMC[i].hasta) return TRAMOS_IMC[i].etiqueta;
+    }
+    return ETIQUETA_IMC_MAXIMA;
+  }
+
+  /** Peso que da un IMC de 24.9 para esa altura: el techo del rango normal. */
+  function pesoMaxNormalKg(alturaCm) {
+    var metros = metrosDe(alturaCm);
+    if (metros === null) return null;
+    return redondear(IMC_MAX_NORMAL * metros * metros, 2);
+  }
+
+  /** Kilos por encima de ese techo, con piso en 0: quien ya esta dentro del
+   *  rango esta a 0 kg del rango, no a -5. Se resta exacto y se redondea al
+   *  final. */
+  function kgSobreNormal(pesoKg, alturaCm) {
+    var peso = pesoUtil(pesoKg);
+    if (peso === null) return null;
+    var metros = metrosDe(alturaCm);
+    if (metros === null) return null;
+    var exceso = peso - (IMC_MAX_NORMAL * metros * metros);
+    if (exceso <= 0) return 0;
+    var salida = redondear(exceso, 2);
+    return (salida === null || salida <= 0) ? 0 : salida;
+  }
+
   function promedioMovil(serie, fechaRef, ventanaDias, minDatos) {
     var ref = aISO(fechaRef);
     if (!ref) return null;
@@ -482,6 +588,55 @@
     }
     if (cuenta < minimo) return null;
     return suma / cuenta;
+  }
+
+  /**
+   * Metricas.tendencia del contrato: compara el promedio movil que termina en
+   * `hoy` contra el que terminaba 7 dias antes. Se llama tendenciaSemanal
+   * porque en este archivo `tendencia` ya es la curva de peso de la siembra.
+   *
+   * Devuelve {direccion, deltaKg, desdeFecha}:
+   *  - direccion: 'bajo' | 'subio' | 'igual' | null. null significa "no hay con
+   *    que comparar"; 'igual' si es una medicion.
+   *  - deltaKg: promedio de hoy MENOS el de hace 7 dias, o sea negativo cuando
+   *    la persona bajo. Para redactar, usa direccion y el valor absoluto.
+   *  - desdeFecha: la fecha del promedio con el que se comparo.
+   *
+   * Nunca lanza: serie vacia o `hoy` inservible dan los tres campos en null.
+   */
+  function tendenciaSemanal(serie, hoy, config) {
+    var sinDatos = { direccion: null, deltaKg: null, desdeFecha: null };
+    var datos = normalizarSerie(serie);
+    var c = esObjeto(config) ? config : {};
+
+    var ref = aISO(hoy);
+    if (!ref) ref = datos.length ? datos[datos.length - 1].fecha : aISO(c.FECHA_INICIO);
+    if (!ref) return sinDatos;
+
+    // Mismo corte que metricasParticipante: cerrado el reto, la comparacion se
+    // queda en FECHA_FIN en vez de volverse null semana a semana.
+    var fin = aISO(c.FECHA_FIN);
+    var corte = fin ? minFecha(ref, fin) : ref;
+
+    var ventana = Math.max(1, Math.trunc(numeroFinito(c.VENTANA_MOVIL_DIAS) || 7));
+    var minDatos = Math.max(1, Math.trunc(numeroFinito(c.MIN_DATOS_PROMEDIO) || 2));
+
+    var actual = promedioMovil(datos, corte, ventana, minDatos);
+    if (actual === null) return sinDatos;
+
+    var antes = aISO(sumarDias(corte, -DIAS_SEMANA));
+    if (!antes) return sinDatos;
+    var previo = promedioMovil(datos, antes, ventana, minDatos);
+    if (previo === null) return sinDatos;
+
+    var delta = redondear(actual - previo, 2);
+    if (delta === null) return sinDatos;
+
+    var direccion;
+    if (Math.abs(delta) < UMBRAL_RUIDO_KG) direccion = 'igual';
+    else direccion = delta < 0 ? 'bajo' : 'subio';
+
+    return { direccion: direccion, deltaKg: delta, desdeFecha: antes };
   }
 
   function pesoBase(participante, serie, config) {
@@ -609,6 +764,27 @@
       }
     }
 
+    // --- datos de referencia, fuera del ranking ------------------------------
+    // El IMC sale del peso suavizado, el mismo que se muestra en pantalla, para
+    // que los dos numeros cuadren; imcBase sale del peso base. Sin alturaCm
+    // declarada los cinco campos de este bloque son null: es un dato opcional.
+    var altura = participante ? participante.alturaCm : null;
+    var imcActual = datosSuficientes ? imc(suavizado, altura) : null;
+    var tend = tendenciaSemanal(datos, hoyRef, config);
+
+    // registroHoy y diasSinRegistrar se miden contra HOY, no contra el corte:
+    // cerrado el reto, "registro hoy" tiene que ser false aunque haya
+    // registrado el ultimo dia.
+    var registroHoy = false;
+    var diasSinRegistrar = null;
+    for (var q = datos.length - 1; q >= 0; q--) {
+      if (comparar(datos[q].fecha, hoyRef) > 0) continue;
+      registroHoy = datos[q].fecha === hoyRef;
+      var atras = diasEntre(datos[q].fecha, hoyRef);
+      diasSinRegistrar = atras === null ? null : Math.max(0, atras);
+      break;
+    }
+
     return {
       pesoActualSuavizado: datosSuficientes ? redondear(suavizado, 2) : null,
       pesoBase: redondear(base, 2),
@@ -625,7 +801,16 @@
       cinturaPerdidaCm: cinturaPerdida,
       proyeccionMetaFecha: proyeccion,
       ultimaFecha: datos.length ? datos[datos.length - 1].fecha : null,
-      datosSuficientes: datosSuficientes
+      datosSuficientes: datosSuficientes,
+      imc: imcActual,
+      imcClasificacion: clasificacionImc(imcActual),
+      imcBase: imc(base, altura),
+      pesoMaxNormalKg: pesoMaxNormalKg(altura),
+      kgSobreNormal: datosSuficientes ? kgSobreNormal(suavizado, altura) : null,
+      tendencia: tend.direccion,
+      deltaSemanaKg: tend.deltaKg,
+      registroHoy: registroHoy,
+      diasSinRegistrar: diasSinRegistrar
     };
   }
 
@@ -877,6 +1062,7 @@
       metaKg: 62,
       cinturaInicialCm: 98,
       alturaCm: 176,
+      edad: 38,
       perdidaTotal: 5.0,
       cinturaTotal: 5.5,
       desde: 6,
@@ -894,6 +1080,7 @@
       metaKg: 72,
       cinturaInicialCm: 112,
       alturaCm: 181,
+      edad: 41,
       perdidaTotal: 9.2,
       cinturaTotal: 7.5,
       desde: 10,
@@ -914,6 +1101,7 @@
       metaKg: null,
       cinturaInicialCm: null,
       alturaCm: 164,
+      edad: 35,
       desde: null,
       hasta: null,
       huecos: [],
@@ -940,6 +1128,8 @@
       metaKg: plan.metaKg,
       cinturaInicialCm: plan.cinturaInicialCm,
       alturaCm: plan.alturaCm,
+      // Dato de referencia: ninguna metrica la usa, solo se muestra en la ficha.
+      edad: plan.edad === undefined ? null : plan.edad,
       fechaAlta: null,
       activo: true,
       avatarFotoId: idFoto('avatar', plan.id, HOY, 'full'),
@@ -1203,6 +1393,185 @@
     }
   }
 
+  // ------------------------------------------------------- resumen semanal --
+
+  /**
+   * Metricas que no tumban el informe. `pesoBase` lanza a proposito cuando no
+   * hay ni registros iniciales ni peso declarado; en un resumen de grupo eso
+   * dejaria a todos sin informe por una sola fila incompleta, asi que esa
+   * persona sale con los campos del reto en null y el resto sigue.
+   */
+  function metricasSeguras(participante, datos, fechaRef) {
+    try {
+      return metricasParticipante(participante, datos, st().config, fechaRef);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** Primer puesto del ranking, o null si nadie tiene datos suficientes. Los
+   *  observadores no aparecen porque construirRanking ya los excluye. */
+  function liderDe(entradas) {
+    var ranking = construirRanking(entradas);
+    for (var i = 0; i < ranking.length; i++) {
+      if (ranking[i].puesto === 1) {
+        return {
+          participanteId: ranking[i].participanteId,
+          nombre: ranking[i].nombre,
+          pctPerdido: ranking[i].pctPerdido
+        };
+      }
+    }
+    return null;
+  }
+
+  function mismaPersona(a, b) {
+    if (!a || !b) return false;
+    if (a.participanteId === null || b.participanteId === null) return true;
+    return String(a.participanteId) === String(b.participanteId);
+  }
+
+  function entradaRanking(p, metricas) {
+    return {
+      participante: { id: p.id, nombre: p.nombre, rol: p.rol },
+      metricas: metricas || {}
+    };
+  }
+
+  /**
+   * Metricas.resumenSemanal del contrato, calculado sobre los datos sembrados.
+   *
+   *  - La ventana termina en `hoyRef` (o en FECHA_FIN si el reto ya cerro) y
+   *    son 7 dias contando ambos extremos, asi que desde = hasta - 6. Si el
+   *    reto empezo dentro de la ventana, `desde` es FECHA_INICIO y
+   *    `diasPosibles` baja: recien arrancado son 3 dias, no 7.
+   *  - diasRegistrados, diasPosibles y adherenciaPct de cada fila son de la
+   *    VENTANA. La adherencia acumulada del reto sigue en las metricas.
+   *  - pctPerdido si es del reto completo: es la metrica de la apuesta.
+   *  - Los observadores salen en `filas` pero nunca son lider ni entran en
+   *    `sinRegistrar`: no registran peso.
+   *  - cambioDeLider compara el lider de hoy con el de hace 7 dias. Si esa
+   *    fecha cae antes del inicio no habia lider, asi que es false: no hubo
+   *    cambio, hubo estreno.
+   *  - El IMC de cada fila es dato de referencia y no entra al ranking.
+   */
+  function resumenSemanalDe(hoyRef) {
+    var c = st().config;
+    var vacio = {
+      desde: null,
+      hasta: null,
+      lider: null,
+      filas: [],
+      sinRegistrar: [],
+      cambioDeLider: false
+    };
+
+    var ref = aISO(hoyRef);
+    if (!ref) ref = aISO(c.FECHA_INICIO);
+    if (!ref) return vacio;
+
+    var inicio = aISO(c.FECHA_INICIO);
+    var fin = aISO(c.FECHA_FIN);
+    var hasta = fin ? minFecha(ref, fin) : ref;
+
+    var desdeCrudo = aISO(sumarDias(hasta, -(DIAS_SEMANA - 1)));
+    if (!desdeCrudo) return vacio;
+    var desde = (inicio && comparar(inicio, desdeCrudo) > 0) ? inicio : desdeCrudo;
+
+    // Reto que todavia no arranca: `desde` queda por delante de `hasta` y los
+    // dias posibles son 0. Ese cero es la senal de "no hay semana que
+    // resumir"; sin el, el informe diria que nadie registro nada.
+    var ventanaViva = comparar(desde, hasta) <= 0;
+    var diasPosibles = ventanaViva ? diasInclusive(desde, hasta) : 0;
+    if (diasPosibles < 0) diasPosibles = 0;
+
+    var previoRef = aISO(sumarDias(hasta, -DIAS_SEMANA));
+    var huboSemanaPrevia = !!previoRef && !(inicio && comparar(previoRef, inicio) < 0);
+
+    var ventana = Math.max(1, Math.trunc(numeroFinito(c.VENTANA_MOVIL_DIAS) || 7));
+    var minDatos = Math.max(1, Math.trunc(numeroFinito(c.MIN_DATOS_PROMEDIO) || 2));
+
+    var lista = st().participantes;
+    var filas = [];
+    var sinRegistrar = [];
+    var entradasHoy = [];
+    var entradasPrevias = [];
+
+    for (var i = 0; i < lista.length; i++) {
+      var p = lista[i];
+      var datos = normalizarSerie(serieDe(p.id));
+      var m = metricasSeguras(p, datos, ref);
+
+      entradasHoy.push(entradaRanking(p, m));
+      if (huboSemanaPrevia) {
+        entradasPrevias.push(entradaRanking(p, metricasSeguras(p, datos, previoRef)));
+      }
+
+      var registrados = 0;
+      if (ventanaViva) {
+        for (var d = 0; d < datos.length; d++) {
+          if (comparar(datos[d].fecha, desde) < 0) continue;
+          if (comparar(datos[d].fecha, hasta) > 0) continue;
+          registrados++;
+        }
+      }
+      var adherencia = diasPosibles > 0
+        ? redondear(Math.min(100, (registrados / diasPosibles) * 100), 2)
+        : null;
+
+      var tend = tendenciaSemanal(datos, ref, c);
+
+      // Sin metricas del reto (falta el peso base) el IMC todavia puede
+      // existir: depende del peso suavizado, no de la base.
+      var suelto = m ? null : promedioMovil(datos, hasta, ventana, minDatos);
+      var valorImc = m ? m.imc : imc(suelto, p.alturaCm);
+      var exceso = m ? m.kgSobreNormal : kgSobreNormal(suelto, p.alturaCm);
+
+      var registroHoy = false;
+      var diasSinRegistrar = null;
+      for (var q = datos.length - 1; q >= 0; q--) {
+        if (comparar(datos[q].fecha, ref) > 0) continue;
+        registroHoy = datos[q].fecha === ref;
+        var atras = diasEntre(datos[q].fecha, ref);
+        diasSinRegistrar = atras === null ? null : Math.max(0, atras);
+        break;
+      }
+
+      filas.push({
+        participanteId: p.id,
+        nombre: p.nombre,
+        rol: p.rol,
+        pctPerdido: m ? m.pctPerdido : null,
+        deltaSemanaKg: tend.deltaKg,
+        direccion: tend.direccion,
+        diasRegistrados: registrados,
+        diasPosibles: diasPosibles,
+        adherenciaPct: adherencia,
+        registroHoy: registroHoy,
+        diasSinRegistrar: diasSinRegistrar,
+        imc: valorImc === undefined ? null : valorImc,
+        imcClasificacion: clasificacionImc(valorImc),
+        kgSobreNormal: exceso === undefined ? null : exceso
+      });
+
+      if (p.rol !== 'observador' && diasPosibles > 0 && registrados === 0) {
+        sinRegistrar.push(p.nombre);
+      }
+    }
+
+    var lider = liderDe(entradasHoy);
+    var liderPrevio = huboSemanaPrevia ? liderDe(entradasPrevias) : null;
+
+    return {
+      desde: desde,
+      hasta: hasta,
+      lider: lider,
+      filas: filas,
+      sinRegistrar: sinRegistrar,
+      cambioDeLider: !!(lider && liderPrevio && !mismaPersona(lider, liderPrevio))
+    };
+  }
+
   function esPesadaOficialHoy() {
     return diaSemanaISO(HOY) === st().config.DIA_PESADA_OFICIAL;
   }
@@ -1322,6 +1691,9 @@
       metaKg: p.metaKg,
       cinturaInicialCm: p.cinturaInicialCm,
       alturaCm: p.alturaCm,
+      // Puede ser null: la columna se agrego con la hoja ya en produccion y la
+      // persona puede no tenerla cargada. Ninguna metrica la usa.
+      edad: p.edad === undefined ? null : p.edad,
       fechaAlta: p.fechaAlta,
       activo: !!p.activo,
       avatarFotoId: p.avatarFotoId
@@ -1630,6 +2002,41 @@
     };
   };
 
+  /**
+   * informeSemanal — el resumen de los ultimos 7 dias, el mismo que sale por
+   * correo, con el encabezado del reto delante. Forma de la seccion 7.1:
+   * {retoNombre, fechaInicio, fechaFin, hoy, desde, hasta, lider, filas,
+   * sinRegistrar, cambioDeLider, usuarioId}.
+   *
+   * Lo puede pedir cualquier inscrito, observadores incluidos, igual que en el
+   * backend: en este reto la transparencia mutua es parte del anti-trampa.
+   *
+   * Aqui salen nombres y numeros y nada mas: ninguna foto, ningun hash, ningun
+   * correo de nadie y NINGUNA pose. La pose del dia se revela solo por
+   * `poseHoy`, que ademas sella `reveladaEn`; cualquier otra via de revelarla
+   * rompe la primera capa del anti-trampa. Por eso las filas se arman campo por
+   * campo en resumenSemanalDe y no se reenvia el objeto de metricas entero.
+   */
+  rutas.informeSemanal = function () {
+    var u = exigirInscrito();
+    var c = st().config;
+    var res = resumenSemanalDe(HOY);
+    return {
+      retoNombre: c.RETO_NOMBRE,
+      fechaInicio: c.FECHA_INICIO || null,
+      fechaFin: c.FECHA_FIN || null,
+      hoy: HOY,
+      desde: res.desde,
+      hasta: res.hasta,
+      lider: res.lider,
+      filas: res.filas,
+      sinRegistrar: res.sinRegistrar,
+      cambioDeLider: res.cambioDeLider,
+      // Para que la vista marque la fila de quien pregunta sin otra llamada.
+      usuarioId: u.id
+    };
+  };
+
   rutas.historial = function (filtro) {
     var u = exigirInscrito();
     var f = esObjeto(filtro) ? filtro : {};
@@ -1800,6 +2207,12 @@
       throw invalido('La cintura inicial está fuera de rango.', 'cinturaInicialCm');
     }
     var altura = numeroFinito(p.alturaCm);
+    // La edad no entra en ningun calculo. El rango solo evita el dedazo de
+    // teclear 1900 en vez de 19, igual que en el backend.
+    var edad = numeroFinito(p.edad);
+    if (edad !== null && (edad < EDAD_MIN || edad > EDAD_MAX)) {
+      throw invalido('La edad debe estar entre ' + EDAD_MIN + ' y ' + EDAD_MAX + '.', 'edad');
+    }
 
     var lista = st().participantes;
     var existente = null;
@@ -1818,6 +2231,7 @@
         metaKg: meta,
         cinturaInicialCm: cintura,
         alturaCm: altura,
+        edad: edad,
         fechaAlta: HOY,
         activo: true,
         avatarFotoId: null,
@@ -1832,6 +2246,7 @@
       existente.metaKg = meta;
       existente.cinturaInicialCm = cintura === null ? existente.cinturaInicialCm : cintura;
       existente.alturaCm = altura === null ? existente.alturaCm : altura;
+      existente.edad = edad === null ? existente.edad : edad;
     }
     if (p.activo !== undefined) existente.activo = !!p.activo;
 
@@ -1891,6 +2306,28 @@
     return { config: copiarConfig() };
   };
 
+  /**
+   * probarAvisos — el correo de prueba del resumen, solo para admin. Forma de
+   * la seccion 7.1: {enviado, destinatario, cuotaRestante}.
+   *
+   * En el backend real esto manda un correo de verdad y a una sola direccion,
+   * la del dueno del script: no recibe destinatario y no hay forma de pedirle
+   * que escriba a otro lado. Aqui no se envia nada ni se toca el estado
+   * sembrado —la demo no sale a la red—, pero se devuelve un destinatario de
+   * ejemplo para que la vista pueda decir a donde habria ido.
+   *
+   * No hay nada aleatorio: siempre el mismo correo y el mismo cupo, asi que
+   * dos pasadas por la vista de admin se ven identicas.
+   */
+  rutas.probarAvisos = function () {
+    var u = exigirAdmin();
+    return {
+      enviado: true,
+      destinatario: u.email,
+      cuotaRestante: CUOTA_CORREO_DEMO - 1
+    };
+  };
+
   // ------------------------------------------------------- superficie Api --
 
   /**
@@ -1926,6 +2363,7 @@
     poseHoy: function () { return llamar('poseHoy', null); },
     registrar: function (p) { return llamar('registrar', p); },
     resumen: function () { return llamar('resumen', {}); },
+    informeSemanal: function () { return llamar('informeSemanal', {}); },
     historial: function (f) { return llamar('historial', f); },
     foto: function (id, tamano) { return llamar('foto', { fotoId: id, tamano: tamano }); },
     verificar: function (v) { return llamar('verificar', v); },
@@ -1933,6 +2371,7 @@
     guardarParticipante: function (p) { return llamar('guardarParticipante', p); },
     anularRegistro: function (a) { return llamar('anularRegistro', a); },
     configurar: function (c) { return llamar('configurar', c); },
+    probarAvisos: function () { return llamar('probarAvisos', {}); },
 
     // Metadatos del doble de prueba, no del contrato de la API.
     ES_DEMO: true,

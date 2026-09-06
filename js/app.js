@@ -127,6 +127,36 @@
     return err && typeof err.codigo === 'string' ? err.codigo : '';
   }
 
+  /**
+   * tieneCampo(objeto, clave) -> true si el backend publico ESE campo.
+   *
+   * La diferencia entre "el campo no vino" y "el campo vino en null" no es un
+   * detalle: la hoja y el backend ya estan en produccion y se despliegan por
+   * separado del frontend. Si el servidor todavia es el de antes, los campos
+   * nuevos (imc, tendencia, registroHoy) no existen, y pintar SIN_DATO donde
+   * deberia ir un dato hace creer que a la persona le faltan pesadas. Cuando el
+   * campo no viene, la pieza entera no se pinta.
+   */
+  function tieneCampo(objeto, clave) {
+    return !!objeto && typeof objeto === 'object' &&
+      Object.prototype.hasOwnProperty.call(objeto, clave);
+  }
+
+  /**
+   * Booleano de una clave de Config, que puede llegar como booleano de verdad o
+   * como el texto TRUE/FALSE de la hoja. Devuelve null cuando la clave todavia
+   * no existe: es lo que distingue "esta en No" de "nadie la ha creado".
+   */
+  function boolDeConfig(valor) {
+    if (valor === true || valor === false) return valor;
+    if (typeof valor === 'string') {
+      var t = valor.trim().toUpperCase();
+      if (t === 'TRUE' || t === 'SI' || t === 'SÍ' || t === '1') return true;
+      if (t === 'FALSE' || t === 'NO' || t === '0') return false;
+    }
+    return null;
+  }
+
   // ---------------------------------------------------------------------------
   // Catalogos de texto
   // ---------------------------------------------------------------------------
@@ -177,13 +207,34 @@
     { clave: 'EDICION_MISMO_DIA', etiqueta: 'Permitir corregir el registro el mismo día', tipo: 'bool' },
     { clave: 'OBSERVADOR_VE_FOTOS', etiqueta: 'Los observadores ven las fotos', tipo: 'bool' },
     { clave: 'TASA_SEMANAL_SANA_MIN', etiqueta: 'Ritmo semanal sano, mínimo (% del peso)', tipo: 'numero' },
-    { clave: 'TASA_SEMANAL_SANA_MAX', etiqueta: 'Ritmo semanal sano, máximo (% del peso)', tipo: 'numero' }
+    { clave: 'TASA_SEMANAL_SANA_MAX', etiqueta: 'Ritmo semanal sano, máximo (% del peso)', tipo: 'numero' },
+    // Avisos por correo. Son claves NUEVAS: la hoja ya estaba en uso, asi que
+    // pueden no existir todavia. `predet` es el valor con el que se comporta el
+    // backend mientras la clave no exista, y el control lo dice en voz alta en
+    // vez de inventar un "valor actual" que nadie escribio.
+    // AVISOS_ACTIVOS arranca apagado a proposito: es el interruptor maestro y
+    // nadie deberia recibir un correo por accidente.
+    { clave: 'AVISOS_ACTIVOS', etiqueta: 'Enviar los correos de aviso', tipo: 'bool', predet: false },
+    { clave: 'AVISO_HORA', etiqueta: 'Hora del recordatorio diario (0 a 23)', tipo: 'entero', predet: 20 },
+    { clave: 'RESUMEN_DIA', etiqueta: 'Día del resumen semanal (1 = lunes)', tipo: 'entero', predet: 1 },
+    { clave: 'RESUMEN_HORA', etiqueta: 'Hora del resumen semanal (0 a 23)', tipo: 'entero', predet: 8 },
+    { clave: 'AVISAR_SIN_VERIFICAR', etiqueta: 'Avisar de los registros sin revisar', tipo: 'bool', predet: true }
   ];
 
   var TXT_METRICA = 'El ranking se mide en porcentaje del peso inicial perdido, ' +
     'no en kilos: así compiten parejo personas de distinto tamaño. Y se compara ' +
     'el promedio de los últimos 7 días, no la pesada de un día suelto, porque el ' +
     'peso sube y baja cada día por el agua y la comida.';
+
+  // Va SIEMPRE al lado de cualquier numero de IMC, nunca escondido en otra
+  // pantalla. El IMC es un tamizaje de poblacion: relaciona dos numeros y nada
+  // mas. No mide grasa, no mide salud y no decide el reto. Sin esta linea, la
+  // palabra "sobrepeso" en una tarjeta se lee como un diagnostico, y esta app
+  // no diagnostica ni aconseja nada.
+  var TXT_IMC_AVISO = 'El IMC es solo una referencia poblacional: relaciona tu peso ' +
+    'con tu altura y nada más. No distingue grasa de músculo, así que clasifica ' +
+    'como sobrepeso a personas muy musculadas, y tampoco mide tu salud. No entra ' +
+    'en el ranking del reto ni reemplaza lo que te diga un profesional de la salud.';
 
   // ---------------------------------------------------------------------------
   // Estado del arranque y del router
@@ -360,6 +411,90 @@
       clase: ['semaforo', clave ? 'semaforo--' + clave : null]
     }, etiqueta));
     caja.appendChild(el('p', { clase: 'stat__pie' }, textoSemaforo(clave, minimo, maximo)));
+    return caja;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tendencia de la semana y marca de "registró hoy"
+  // ---------------------------------------------------------------------------
+  //
+  // Los dos datos vienen del backend (metricas.tendencia / metricas.registroHoy
+  // y las filas de informeSemanal). Aqui solo se redactan, y siempre en tercera
+  // persona porque las mismas piezas pintan la tarjeta de cualquiera.
+
+  /**
+   * textoTendencia(direccion, deltaKg) -> "Bajó 0,8 kg esta semana".
+   *
+   * `deltaKg` viene con signo (negativo = bajo de peso), asi que el numero se
+   * muestra en valor absoluto y quien dice la direccion es la palabra. Una
+   * diferencia menor a 0,2 kg llega como 'igual': es ruido de balanza, no un
+   * cambio, y decir "bajó 0,1 kg" seria mentir con precision falsa.
+   */
+  function textoTendencia(direccion, deltaKg) {
+    var d = numero(deltaKg);
+    var abs = d === null ? null : Math.abs(d);
+    if (direccion === 'bajo' && abs !== null) return 'Bajó ' + fmtKg(abs) + ' esta semana';
+    if (direccion === 'subio' && abs !== null) return 'Subió ' + fmtKg(abs) + ' esta semana';
+    if (direccion === 'igual') return 'Se mantuvo esta semana';
+    return 'Todavía no hay con qué comparar la semana';
+  }
+
+  /** Pie explicativo de la tendencia, para que el numero no quede suelto. */
+  function pieTendencia(direccion) {
+    if (direccion === 'igual') {
+      return 'La diferencia con hace 7 días es menor a 0,2 kg: eso es ruido de la ' +
+        'balanza, no un cambio.';
+    }
+    if (direccion === 'bajo' || direccion === 'subio') {
+      return 'Compara el promedio de 7 días de hoy contra el de hace una semana.';
+    }
+    return 'Hacen falta pesadas en las dos semanas para poder compararlas.';
+  }
+
+  /**
+   * bloqueTendencia(m) -> nodo con la tendencia, o null si el backend todavia
+   * no publica el campo (despliegue viejo: mejor no pintar nada que inventar).
+   */
+  function bloqueTendencia(m) {
+    if (!tieneCampo(m, 'tendencia') && !tieneCampo(m, 'deltaSemanaKg')) return null;
+    var direccion = typeof m.tendencia === 'string' ? m.tendencia : null;
+    return el('div', { clase: 'apilado' }, [
+      el('p', { clase: 'stat__etiqueta' }, 'Esta semana'),
+      el('p', {}, textoTendencia(direccion, m.deltaSemanaKg)),
+      el('p', { clase: 'stat__pie' }, pieTendencia(direccion))
+    ]);
+  }
+
+  /**
+   * chipsDeSeguimiento(m) -> [chip] con si registro hoy y cuanto lleva sin
+   * hacerlo. Lista vacia si el backend no publica `registroHoy`.
+   */
+  function chipsDeSeguimiento(m) {
+    var salida = [];
+    if (!tieneCampo(m, 'registroHoy')) return salida;
+
+    if (m.registroHoy === true) {
+      salida.push(chip('Ya registró hoy', 'ok'));
+      return salida;
+    }
+
+    salida.push(chip('Sin registrar hoy', 'revisar'));
+    var d = numero(m.diasSinRegistrar);
+    if (d === null) {
+      salida.push(chip('Sin ninguna pesada todavía'));
+    } else if (d === 1) {
+      salida.push(chip('Última pesada: ayer'));
+    } else if (d > 1) {
+      salida.push(chip('Última pesada: hace ' + fmtNum(d, 0) + ' días'));
+    }
+    return salida;
+  }
+
+  /** Fila de chips, o null si no hay ninguno que mostrar. */
+  function filaDeChips(chips) {
+    if (!chips || !chips.length) return null;
+    var caja = el('div', { clase: 'feed__cabecera' });
+    for (var i = 0; i < chips.length; i++) caja.appendChild(chips[i]);
     return caja;
   }
 
@@ -649,7 +784,85 @@
     else nav.classList.add('oculto');
   }
 
+  // ---------------------------------------------------------------------------
+  // Enlace y encabezado de #/semana, inyectados desde aqui
+  // ---------------------------------------------------------------------------
+  //
+  // El cascaron (index.html) y el CSS los mantiene otro agente, asi que la vista
+  // nueva no puede pedir que le agreguen su pestaña. Se inyecta con las MISMAS
+  // clases y el mismo data-ruta que las demas, para que marcarNav, el CSS del
+  // encabezado y el estado activo la traten igual que a las otras cinco. No se
+  // inventa ninguna clase nueva: si el CSS no la define, la pestaña sale sin
+  // estilo (y la prueba de diseño falla, con razon).
+  //
+  // El contrato (seccion 8) pide que a #/semana se pueda entrar desde #/tablero
+  // porque la barra vive en un archivo con dueno; ese enlace existe y es el que
+  // no depende de nadie. Esta pestaña es ADEMAS, no en vez de, y se inyecta sin
+  // tocar index.html. Es idempotente: si algun dia ese dueno agrega su propia
+  // entrada con data-ruta="semana", esta no se duplica.
+
+  var NS_SVG = 'http://www.w3.org/2000/svg';
+  var encabezadoSemana = null;
+
+  /** Icono de la barra de navegacion. SVG por createElementNS: nada de HTML. */
+  function iconoNav(trazos) {
+    var svg = document.createElementNS(NS_SVG, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    for (var i = 0; i < trazos.length; i++) {
+      var p = document.createElementNS(NS_SVG, 'path');
+      p.setAttribute('d', trazos[i]);
+      svg.appendChild(p);
+    }
+    return svg;
+  }
+
+  function asegurarNavSemana() {
+    if (!nav || qs('#nav a[data-ruta="semana"]')) return;
+    var enlace = el('a', {
+      clase: 'nav__link',
+      href: '#/semana',
+      'data-ruta': 'semana'
+    });
+    enlace.appendChild(iconoNav(['M4 5v14h16', 'M7.5 14.5l3.5-4.5 3 2.5 4-6']));
+    enlace.appendChild(el('span', {}, 'Semana'));
+    var siguiente = qs('#nav a[data-ruta="historial"]');
+    if (siguiente) nav.insertBefore(enlace, siguiente);
+    else nav.appendChild(enlace);
+  }
+
+  /**
+   * El bloque de titulo grande que el cascaron pinta encima de cada vista. Sus
+   * hijos estan ocultos por clase y solo se muestra el de la ruta activa; este
+   * no tiene clase propia (no se toca el CSS ajeno), asi que se muestra y se
+   * esconde con estilo en linea, que gana sobre la regla de clase.
+   */
+  function asegurarEncabezadoSemana() {
+    if (encabezadoSemana) return encabezadoSemana;
+    var host = document.querySelector('.encabezado-reto');
+    if (!host) return null;
+    var caja = el('div', {}, [
+      el('p', { clase: 'antetitulo' }, 'LOS ÚLTIMOS 7 DÍAS'),
+      el('h2', {}, 'La semana, en una página.'),
+      el('p', {}, 'Quién bajó, quién se mantuvo y quién todavía no registró hoy.')
+    ]);
+    caja.style.display = 'none';
+    host.appendChild(caja);
+    encabezadoSemana = caja;
+    return caja;
+  }
+
   function marcarNav(ruta) {
+    asegurarNavSemana();
+    var cabSemana = asegurarEncabezadoSemana();
+    if (cabSemana) cabSemana.style.display = ruta === 'semana' ? 'block' : 'none';
+
     var enlaces = U.qsa ? U.qsa('#nav .nav__link') : [];
     for (var i = 0; i < enlaces.length; i++) {
       var a = enlaces[i];
@@ -1110,6 +1323,22 @@
       el('p', { clase: 'campo__ayuda' }, 'Además, el servidor pone la fecha y la ' +
         'hora, guarda una huella de cada foto para rechazar la misma imagen dos ' +
         'veces y marca para revisión los saltos de peso improbables.')
+    ]));
+
+    vista.appendChild(tarjeta('El resumen de la semana', [
+      el('p', {}, 'En «Semana» está el resumen de los últimos 7 días: cuánto bajó o ' +
+        'subió cada persona, cuántos días registró y quién todavía no registró hoy.'),
+      el('p', { clase: 'campo__ayuda' }, 'Ese mismo resumen puede llegar por correo, ' +
+        'junto con un recordatorio diario, si quien administra enciende los avisos. ' +
+        'Los correos nunca llevan la pose del día de nadie.')
+    ], [
+      enlaceBoton('Ver la semana', '#/semana', { variante: 'fantasma' })
+    ]));
+
+    vista.appendChild(tarjeta('El IMC que aparece en «Yo»', [
+      el('p', {}, 'Si tu altura está registrada, en «Yo» se muestra tu IMC, en qué ' +
+        'categoría cae y a cuántos kilos estás del rango normal para tu altura.'),
+      el('p', { clase: 'campo__ayuda' }, TXT_IMC_AVISO)
     ]));
 
     vista.appendChild(tarjeta('Protocolo de la pesada', [
@@ -1979,6 +2208,12 @@
   function tarjetaParticipante(nombre, m, r) {
     var cuerpo = [];
 
+    // Lo primero de la tarjeta: si esta persona ya registro hoy. Es el dato que
+    // se busca de un vistazo y el que dispara el recordatorio, asi que va
+    // arriba y no en el pie.
+    var chipsHoy = filaDeChips(chipsDeSeguimiento(m));
+    if (chipsHoy) cuerpo.push(chipsHoy);
+
     cuerpo.push(el('div', { clase: 'grid grid--2' }, [
       stat(fmtPct(m.pctPerdido), 'Porcentaje perdido'),
       stat(fmtKg(m.kgPerdidos), 'Kilos perdidos'),
@@ -2013,6 +2248,9 @@
       stat(numero(m.tasaSemanalPct) === null ? SIN_DATO : fmtPct(m.tasaSemanalPct),
         'Ritmo semanal', 'Porcentaje del peso por semana')
     ]));
+
+    var tend = bloqueTendencia(m);
+    if (tend) cuerpo.push(tend);
 
     cuerpo.push(semaforo(m.semaforoTasa, r.tasaSemanalSanaMin, r.tasaSemanalSanaMax));
 
@@ -2109,8 +2347,12 @@
 
     var fig = figuraGrafico('Porcentaje perdido', 'Cada línea es una persona. Un ' +
       'valor más alto significa que perdió más porcentaje de su peso inicial.');
+    // El contrato (seccion 8) pide que a #/semana se entre desde aqui, y no
+    // solo por la barra de navegacion: la barra vive en index.html, que tiene
+    // dueno propio, asi que este enlace es el que no depende de nadie.
     var cajaGrafico = tarjeta('Cómo va la carrera', [fig.caja], [
-      el('span', {}, TXT_METRICA)
+      el('span', {}, TXT_METRICA),
+      enlaceBoton('Ver el resumen de la semana', '#/semana', { variante: 'fantasma' })
     ]);
     vista.appendChild(cajaGrafico);
     if (typeof Graficos.lineas === 'function') {
@@ -2438,6 +2680,120 @@
     ]);
   }
 
+  /**
+   * tarjetaComposicion(yo, m) -> tarjeta de IMC para #/yo, o el aviso de que
+   * falta la altura.
+   *
+   * Lo importante de la tarjeta no es el IMC, que es un numero abstracto: son
+   * los kilos que faltan para entrar al rango normal, porque eso si se entiende
+   * y se puede seguir. El IMC queda como referencia, con su catalogo y con la
+   * advertencia de que es un tamizaje de poblacion.
+   *
+   * Ningun texto de aqui puede sonar a diagnostico ni a consejo: se dice donde
+   * cae el numero y a que distancia esta del rango, nunca que alguien "deberia"
+   * hacer nada.
+   */
+  function tarjetaComposicion(yo, m) {
+    var altura = numero(yo && yo.alturaCm);
+    var met = m && typeof m === 'object' ? m : {};
+
+    // Sin altura no hay IMC posible, y la altura solo la carga quien
+    // administra: se dice que falta y a quien pedirsela, no se pinta la tarjeta
+    // llena de guiones.
+    if (altura === null) {
+      return tarjeta('Peso y altura', [
+        el('p', {}, 'Todavía no está registrada tu altura, así que no se puede ' +
+          'calcular tu IMC ni decirte a cuántos kilos estás del rango normal.'),
+        el('p', { clase: 'campo__ayuda' }, 'Pídele a quien administra el reto que ' +
+          'la agregue a tus datos. No cambia nada de la competencia: el ranking se ' +
+          'sigue midiendo en porcentaje del peso perdido.')
+      ], [
+        el('span', {}, TXT_IMC_AVISO)
+      ]);
+    }
+
+    // Sin metricas propias todavia no hay nada que calcular, y el motivo es
+    // que no hay pesadas: no se confunde con el caso del backend viejo.
+    if (!m || typeof m !== 'object') {
+      return tarjeta('Peso y altura', [
+        el('p', {}, 'Tu altura registrada es ' + fmtNum(altura, 0) + ' cm.'),
+        el('p', { clase: 'campo__ayuda' }, 'Cuando tengas pesadas registradas ' +
+          'aparecerá aquí tu IMC y a cuántos kilos estás del rango normal para tu ' +
+          'altura.')
+      ], [
+        el('span', {}, TXT_IMC_AVISO)
+      ]);
+    }
+
+    // Despliegue viejo: el backend todavia no calcula estos campos. Se dice
+    // eso, y no "te faltan pesadas", que seria falso.
+    if (!tieneCampo(met, 'imc') && !tieneCampo(met, 'kgSobreNormal')) {
+      return tarjeta('Peso y altura', [
+        el('p', {}, 'Tu altura registrada es ' + fmtNum(altura, 0) + ' cm.'),
+        el('p', { clase: 'campo__ayuda' }, 'El cálculo del IMC todavía no está ' +
+          'disponible en este servidor. Aparecerá aquí en cuanto se actualice.')
+      ]);
+    }
+
+    var imc = numero(met.imc);
+    var imcBase = numero(met.imcBase);
+    var exceso = numero(met.kgSobreNormal);
+    var tope = numero(met.pesoMaxNormalKg);
+    var categoria = typeof met.imcClasificacion === 'string' && met.imcClasificacion
+      ? met.imcClasificacion
+      : '';
+
+    var cuerpo = [];
+
+    // Franja de 24.9 a 25 (contrato 6.1): el techo del rango normal esta en un
+    // IMC de 24.9 y el borde del catalogo en 25, asi que un IMC de 24.95 sale a
+    // la vez clasificado como «normal» y con unos gramos de kgSobreNormal. Las
+    // dos definiciones vienen de fuera y ninguna se ajusta por cuenta propia;
+    // lo que si se puede es no mostrarlas juntas, porque leidas en pareja se
+    // contradicen. Manda el catalogo: si dice «normal», la tarjeta dice que
+    // esta dentro y no menciona esos gramos.
+    var contradiccionDeBorde = categoria === 'normal' && exceso !== null && exceso > 0;
+
+    // El dato principal, arriba y solo.
+    var frase;
+    var valorPrincipal;
+    var etiquetaPrincipal;
+    if (exceso === null) {
+      valorPrincipal = SIN_DATO;
+      etiquetaPrincipal = 'Distancia al rango normal';
+      frase = 'Todavía no hay pesadas suficientes para el promedio de 7 días, que es ' +
+        'el peso con el que se hace esta cuenta.';
+    } else if (exceso <= 0 || contradiccionDeBorde) {
+      valorPrincipal = 'Dentro';
+      etiquetaPrincipal = 'Del rango normal para tu altura';
+      frase = 'Tu peso está dentro del rango normal para tu altura' +
+        (tope === null ? '.' : ', que llega hasta ' + fmtKg(tope) + '.');
+    } else {
+      valorPrincipal = fmtKg(exceso);
+      etiquetaPrincipal = 'Del rango normal para tu altura';
+      frase = 'Estás a ' + fmtKg(exceso) + ' del rango normal para tu altura' +
+        (tope === null ? '.' : ', que para ' + fmtNum(altura, 0) + ' cm llega hasta ' +
+          fmtKg(tope) + '.');
+    }
+    cuerpo.push(stat(valorPrincipal, etiquetaPrincipal, frase));
+
+    cuerpo.push(el('div', { clase: 'grid grid--2' }, [
+      stat(imc === null ? SIN_DATO : fmtNum(imc, 2), 'IMC de hoy',
+        categoria
+          ? 'Cae en la categoría «' + categoria + '»'
+          : 'Se calcula con tu promedio de 7 días'),
+      stat(imcBase === null ? SIN_DATO : fmtNum(imcBase, 2), 'IMC al empezar',
+        'Con tu peso de referencia del reto')
+    ]));
+
+    cuerpo.push(el('p', { clase: 'campo__ayuda' }, TXT_IMC_AVISO));
+
+    return tarjeta('Peso y altura', cuerpo, [
+      el('span', {}, 'Altura registrada: ' + fmtNum(altura, 0) + ' cm. ' +
+        'Si no es la tuya, pídele a quien administra que la corrija.')
+    ]);
+  }
+
   async function vistaYo(gen) {
     cargandoEn(vista, 'Cargando tus datos…');
 
@@ -2573,6 +2929,14 @@
         'aquí aparecen tus números.')));
     }
 
+    // Peso y altura -----------------------------------------------------------
+    // Un observador no registra peso, asi que no hay IMC que mostrarle. Si el
+    // resumen fallo, tampoco: `mias` vendria vacio y la tarjeta diria que faltan
+    // pesadas cuando lo que fallo fue la red.
+    if (!esObservador() && !errorResumen) {
+      vista.appendChild(tarjetaComposicion(yo, mias));
+    }
+
     // Protocolo ---------------------------------------------------------------
     if (!esObservador()) {
       var pasos = el('ol', {});
@@ -2587,11 +2951,256 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Vista: #/semana
+  // ---------------------------------------------------------------------------
+  //
+  // El mismo resumen que sale por correo, pero dentro de la aplicacion: quien
+  // tenga los avisos apagados (que es como vienen de fabrica) igual puede verlo.
+  // Todo lo que se pinta aqui lo calcula el backend en la ruta `informeSemanal`;
+  // este archivo no recalcula ni una cuenta.
+
+  /**
+   * La ruta puede no existir todavia en el Api desplegado. Se intenta el metodo
+   * con nombre y, si no esta, la llamada generica: asi el frontend no queda
+   * atado a que api.js se publique en el mismo momento.
+   */
+  function pedirInformeSemanal() {
+    if (typeof Api.informeSemanal === 'function') return Api.informeSemanal();
+    if (typeof Api.llamar === 'function') return Api.llamar('informeSemanal', {});
+    return Promise.reject(new Error('No hay forma de pedir el resumen semanal.'));
+  }
+
+  /**
+   * Saca el resumen del sobre que devuelva la ruta. Se aceptan varias formas
+   * (el resumen suelto o envuelto) porque el nombre exacto del campo lo decide
+   * el backend, y una vista rota por un nombre distinto no vale la pena.
+   */
+  function informeDe(datos) {
+    var raiz = datos && typeof datos === 'object' ? datos : {};
+    var candidatos = [raiz.informe, raiz.resumen, raiz.semana, raiz.informeSemanal, raiz];
+    for (var i = 0; i < candidatos.length; i++) {
+      var c = candidatos[i];
+      if (c && typeof c === 'object' && Array.isArray(c.filas)) return c;
+    }
+    return null;
+  }
+
+  /** El cuadro de "esta semana" de una fila del resumen. */
+  function statSemana(direccion, deltaKg) {
+    var d = numero(deltaKg);
+    var abs = d === null ? null : Math.abs(d);
+    if (direccion === 'bajo' && abs !== null) {
+      return stat(fmtKg(abs), 'Bajó esta semana', pieTendencia(direccion));
+    }
+    if (direccion === 'subio' && abs !== null) {
+      return stat(fmtKg(abs), 'Subió esta semana', pieTendencia(direccion));
+    }
+    if (direccion === 'igual') {
+      return stat('Igual', 'Esta semana', pieTendencia(direccion));
+    }
+    return stat(SIN_DATO, 'Esta semana', pieTendencia(direccion));
+  }
+
+  /**
+   * Orden de lectura: primero quien mas porcentaje lleva perdido, y los
+   * observadores al final. El backend entrega las filas en el orden en que
+   * estan en la hoja y deja el orden al llamador.
+   */
+  function ordenarFilasSemana(filas) {
+    var copia = filas.slice();
+    copia.sort(function (a, b) {
+      var obsA = String((a && a.rol) || '').toLowerCase() === 'observador' ? 1 : 0;
+      var obsB = String((b && b.rol) || '').toLowerCase() === 'observador' ? 1 : 0;
+      if (obsA !== obsB) return obsA - obsB;
+      var pa = numero(a && a.pctPerdido);
+      var pb = numero(b && b.pctPerdido);
+      if (pa === null && pb === null) return 0;
+      if (pa === null) return 1;
+      if (pb === null) return -1;
+      if (pa !== pb) return pb - pa;
+      return String((a && a.nombre) || '').localeCompare(String((b && b.nombre) || ''));
+    });
+    return copia;
+  }
+
+  function tarjetaSemanaPersona(fila, miId) {
+    var f = fila && typeof fila === 'object' ? fila : {};
+    var nombre = f.nombre || 'Participante';
+    var observa = String(f.rol || '').toLowerCase() === 'observador';
+    var soyYo = !!miId && String(f.participanteId || '') === String(miId);
+
+    var cuerpo = [];
+
+    var chips = [];
+    // `usuarioId` viene en la respuesta justo para esto: marcar la fila propia
+    // sin una segunda llamada.
+    if (soyYo) chips.push(chip('Tú', 'oficial'));
+    if (observa) {
+      chips.push(chip('Solo mira', 'oficial'));
+    } else {
+      // A un observador no se le marca «sin registrar hoy»: no registra nunca,
+      // asi que ese aviso seria un reproche por cumplir su rol.
+      var seg = chipsDeSeguimiento(f);
+      for (var i = 0; i < seg.length; i++) chips.push(seg[i]);
+    }
+    var cabecera = filaDeChips(chips);
+    if (cabecera) cuerpo.push(cabecera);
+
+    if (observa) {
+      cuerpo.push(el('p', { clase: 'campo__ayuda' },
+        'Los observadores no registran pesadas ni entran al ranking.'));
+      return tarjeta(nombre, cuerpo);
+    }
+
+    cuerpo.push(el('div', { clase: 'grid grid--2' }, [
+      stat(numero(f.pctPerdido) === null ? SIN_DATO : fmtPct(f.pctPerdido),
+        'Porcentaje perdido', 'Desde el inicio del reto, no solo esta semana'),
+      statSemana(typeof f.direccion === 'string' ? f.direccion : null, f.deltaSemanaKg)
+    ]));
+
+    var posibles = numero(f.diasPosibles);
+    var registrados = numero(f.diasRegistrados);
+    var pieAdherencia;
+    if (posibles === null || posibles <= 0) {
+      pieAdherencia = 'Esta semana todavía no tiene días que contar.';
+    } else {
+      pieAdherencia = (registrados === null ? SIN_DATO : fmtNum(registrados, 0)) +
+        ' de ' + fmtNum(posibles, 0) + ' días de la semana.';
+    }
+    cuerpo.push(el('div', { clase: 'apilado' }, [
+      el('p', { clase: 'stat__etiqueta' }, 'Constancia de la semana'),
+      barra(f.adherenciaPct, 'Constancia de la semana de ' + nombre),
+      el('p', { clase: 'stat__pie' },
+        (numero(f.adherenciaPct) === null ? SIN_DATO : fmtPct(f.adherenciaPct, 0)) +
+        ' · ' + pieAdherencia)
+    ]));
+
+    return tarjeta(nombre, cuerpo);
+  }
+
+  function tarjetaResumenSemana(inf) {
+    var cuerpo = [];
+
+    var desde = inf.desde ? fmtFecha(inf.desde) : SIN_DATO;
+    var hasta = inf.hasta ? fmtFecha(inf.hasta) : SIN_DATO;
+    cuerpo.push(el('p', {}, 'Del ' + desde + ' al ' + hasta + '.'));
+
+    if (inf.cambioDeLider) {
+      var aviso = filaDeChips([chip('Cambió quién va primero', 'oficial')]);
+      if (aviso) cuerpo.push(aviso);
+    }
+
+    var lider = inf.lider && typeof inf.lider === 'object' ? inf.lider : null;
+    if (lider) {
+      cuerpo.push(stat(lider.nombre || 'Participante', 'Va primero',
+        numero(lider.pctPerdido) === null
+          ? 'Todavía sin porcentaje calculado'
+          : fmtPct(lider.pctPerdido) + ' del peso inicial perdido'));
+    } else {
+      cuerpo.push(el('p', { clase: 'campo__ayuda' },
+        'Todavía nadie tiene pesadas suficientes para ir primero.'));
+    }
+
+    var sin = Array.isArray(inf.sinRegistrar) ? inf.sinRegistrar : [];
+    if (sin.length) {
+      var chips = [];
+      for (var i = 0; i < sin.length; i++) {
+        chips.push(chip(String(sin[i] || 'Participante'), 'revisar'));
+      }
+      cuerpo.push(el('div', { clase: 'apilado' }, [
+        el('p', { clase: 'stat__etiqueta' }, 'No registró ni un día de esta semana'),
+        filaDeChips(chips)
+      ]));
+    }
+
+    return tarjeta('Resumen de la semana', cuerpo, [el('span', {}, TXT_METRICA)]);
+  }
+
+  async function vistaSemana(gen) {
+    cargandoEn(vista, 'Cargando el resumen de la semana…');
+
+    var datos = null;
+    var fallo = null;
+    try {
+      datos = await pedirInformeSemanal();
+    } catch (err) {
+      fallo = err;
+    }
+    if (!vigente(gen)) return;
+
+    limpiar(vista);
+
+    if (fallo) {
+      // RUTA_DESCONOCIDA no es culpa de nadie: es un backend (o la demo) que
+      // todavia no trae el resumen. Ofrecer «Reintentar» solo repetiria el
+      // mismo fallo, asi que se explica y punto.
+      if (codigoDe(fallo) === 'RUTA_DESCONOCIDA') {
+        vacioEn(vista, 'El resumen semanal todavía no está disponible aquí. ' +
+          'Aparecerá en cuanto se actualice el servidor del reto.');
+        return;
+      }
+      errorEn(vista, textoError(fallo), {
+        texto: 'Reintentar',
+        alPulsar: function () { irA('semana', true); }
+      });
+      return;
+    }
+
+    var inf = informeDe(datos);
+    if (!inf) {
+      vacioEn(vista, 'El servidor respondió sin datos de la semana. Vuelve a ' +
+        'intentarlo en un momento.', {
+        texto: 'Reintentar',
+        alPulsar: function () { irA('semana', true); }
+      });
+      return;
+    }
+
+    vista.appendChild(tarjetaResumenSemana(inf));
+
+    var filas = ordenarFilasSemana(inf.filas);
+    if (!filas.length) {
+      vista.appendChild(el('div', { clase: 'vacio' }, el('p', {},
+        'Todavía no hay nadie en el reto, así que no hay semana que resumir.')));
+      return;
+    }
+
+    var yo = estado.sesion && estado.sesion.usuario ? estado.sesion.usuario : {};
+    var miId = inf.usuarioId || yo.id || '';
+    for (var i = 0; i < filas.length; i++) {
+      vista.appendChild(tarjetaSemanaPersona(filas[i], miId));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Vista: #/admin
   // ---------------------------------------------------------------------------
 
+  /**
+   * Texto del valor actual de una clave que quiza todavia no existe en la hoja.
+   *
+   * La hoja ya esta en uso, asi que una clave nueva no aparece hasta que alguien
+   * la escribe por primera vez. Decir SIN_DATO a secas hace pensar que el reto
+   * esta sin configurar; lo honesto es decir que no esta definida y con que
+   * valor se comporta el backend mientras tanto.
+   */
+  function textoValorActual(hay, texto, predet) {
+    if (hay) return 'Valor actual: ' + texto;
+    if (predet === null || predet === undefined) return 'Valor actual: ' + SIN_DATO;
+    return 'Todavía sin definir: mientras tanto se comporta como «' + predet + '».';
+  }
+
   function controlDeConfig(entrada, valorActual) {
     if (entrada.tipo === 'bool') {
+      // El valor puede llegar como booleano o como el TRUE/FALSE de la hoja.
+      var actualBool = boolDeConfig(valorActual);
+      var predetBool = typeof entrada.predet === 'boolean' ? entrada.predet : null;
+      // Si la clave no existe todavia, se preselecciona el valor con el que se
+      // comporta el backend. Preseleccionar «Sí» en AVISOS_ACTIVOS, que arranca
+      // apagado a proposito, seria empujar a encender los correos sin querer.
+      var elegido = actualBool !== null
+        ? actualBool
+        : (predetBool !== null ? predetBool : true);
       return crearCampo({
         id: 'campo-config-valor',
         etiqueta: 'Valor nuevo',
@@ -2600,8 +3209,9 @@
           { valor: 'true', etiqueta: 'Sí' },
           { valor: 'false', etiqueta: 'No' }
         ],
-        valor: valorActual === false ? 'false' : (valorActual === true ? 'true' : 'true'),
-        ayuda: 'Valor actual: ' + (valorActual === true ? 'Sí' : valorActual === false ? 'No' : SIN_DATO)
+        valor: elegido ? 'true' : 'false',
+        ayuda: textoValorActual(actualBool !== null, actualBool ? 'Sí' : 'No',
+          predetBool === null ? null : (predetBool ? 'Sí' : 'No'))
       });
     }
     if (entrada.tipo === 'fecha') {
@@ -2616,17 +3226,23 @@
       });
     }
     if (entrada.tipo === 'entero' || entrada.tipo === 'numero') {
+      var decimales = entrada.tipo === 'entero' ? 0 : 2;
+      var actualNum = numero(valorActual);
+      var predetNum = numero(entrada.predet);
       return crearCampo({
         id: 'campo-config-valor',
         etiqueta: 'Valor nuevo',
         tipo: 'number',
         obligatorio: true,
-        valor: numero(valorActual) === null ? '' : valorActual,
+        valor: actualNum === null
+          ? (predetNum === null ? '' : predetNum)
+          : valorActual,
         atributos: {
           inputmode: 'decimal',
           step: entrada.tipo === 'entero' ? '1' : '0.1'
         },
-        ayuda: 'Valor actual: ' + (numero(valorActual) === null ? SIN_DATO : fmtNum(valorActual, 2))
+        ayuda: textoValorActual(actualNum !== null, fmtNum(valorActual, decimales),
+          predetNum === null ? null : fmtNum(predetNum, decimales))
       });
     }
     return crearCampo({
@@ -2913,6 +3529,150 @@
     ]);
   }
 
+  // ---------------------------------------------------------------------------
+  // Avisos por correo (dentro de #/admin)
+  // ---------------------------------------------------------------------------
+
+  // Motivos por los que el backend puede no haber mandado el correo de prueba.
+  // Se traducen aqui: el codigo tecnico no le dice nada a nadie.
+  var MOTIVOS_PRUEBA = {
+    sin_correo_dueno: 'No se pudo leer el correo de la cuenta dueña del reto, así que ' +
+      'no se envió nada.',
+    sin_metricas: 'Todavía no hay métricas con las que armar el resumen, así que no ' +
+      'se envió nada.',
+    resumen_vacio: 'El resumen salió sin ninguna persona, así que no se envió nada.',
+    sin_cuota: 'La cuenta se quedó sin cupo de correos por hoy. Vuelve a intentarlo ' +
+      'mañana.'
+  };
+
+  function pedirPruebaAvisos() {
+    if (typeof Api.probarAvisos === 'function') return Api.probarAvisos();
+    if (typeof Api.llamar === 'function') return Api.llamar('probarAvisos', {});
+    return Promise.reject(new Error('No hay forma de pedir el correo de prueba.'));
+  }
+
+  /**
+   * Pinta el resultado del envio de prueba dentro de `caja`.
+   *
+   * El contrato de la ruta es {enviado, destinatario, cuotaRestante}. Se acepta
+   * ademas `enviados` y `motivo`, que son los campos del informe interno de
+   * Avisos, por si un despliegue devolviera el informe crudo.
+   */
+  function pintarResultadoPrueba(caja, respuesta) {
+    limpiar(caja);
+    var r = respuesta && typeof respuesta === 'object' ? respuesta : {};
+
+    var enviado = r.enviado === true;
+    if (!enviado) {
+      var n = numero(r.enviados);
+      enviado = n !== null && n > 0;
+    }
+
+    var destino = typeof r.destinatario === 'string' ? r.destinatario.trim() : '';
+
+    if (enviado) {
+      caja.appendChild(el('p', {}, destino
+        ? 'Correo de prueba enviado a ' + destino + '. Puede tardar un par de minutos ' +
+          'en llegar.'
+        : 'Correo de prueba enviado a la cuenta dueña del reto. Puede tardar un par de ' +
+          'minutos en llegar.'));
+    } else {
+      var motivo = typeof r.motivo === 'string' ? r.motivo : '';
+      caja.appendChild(el('p', {},
+        Object.prototype.hasOwnProperty.call(MOTIVOS_PRUEBA, motivo)
+          ? MOTIVOS_PRUEBA[motivo]
+          : 'El servidor no llegó a enviar el correo de prueba. El motivo queda en la ' +
+            'auditoría y en el registro de ejecuciones del backend.'));
+    }
+
+    var cuota = numero(r.cuotaRestante);
+    if (cuota !== null) {
+      caja.appendChild(el('p', { clase: 'stat__pie' },
+        'Cupo de correos que le queda hoy a la cuenta: ' + fmtNum(cuota, 0) + '.'));
+    }
+
+    // El interruptor maestro se lee de la configuracion del reto, no de la
+    // respuesta: la prueba sale aunque los avisos esten apagados, y conviene
+    // recordarlo aqui mismo para que nadie crea que ya quedaron encendidos.
+    var activos = boolDeConfig(configReto().AVISOS_ACTIVOS);
+    if (activos !== true) {
+      caja.appendChild(el('p', { clase: 'stat__pie' },
+        'Los avisos automáticos ' +
+        (activos === false ? 'están apagados' : 'todavía no están encendidos') +
+        ': la prueba sale igual, pero el recordatorio diario y el resumen semanal no ' +
+        'se mandan hasta que enciendas «Enviar los correos de aviso».'));
+    }
+  }
+
+  function tarjetaAvisos(gen) {
+    var cuerpo = [];
+
+    cuerpo.push(el('p', {}, 'El reto puede mandar dos correos automáticos: un ' +
+      'recordatorio diario a quien todavía no registró y un resumen de la semana. ' +
+      'Los dos dependen del interruptor «Enviar los correos de aviso», que se cambia ' +
+      'en la tarjeta de configuración y viene apagado de fábrica.'));
+
+    var reglas = el('ul', {});
+    [
+      'Solo se escribe a los correos que están en la lista de participantes y siguen activos.',
+      'Ningún correo lleva la pose del día de nadie: mandarla por correo rompería el anti-trampa.',
+      'El mismo aviso no se manda dos veces el mismo día.',
+      'Cada envío queda anotado en la auditoría del reto.'
+    ].forEach(function (t) { reglas.appendChild(el('li', {}, t)); });
+    cuerpo.push(reglas);
+
+    var resultado = el('div', {
+      clase: 'apilado',
+      atributos: { role: 'status', 'aria-live': 'polite' }
+    });
+
+    var btn = boton('Enviar un correo de prueba', { variante: 'primario', bloque: true });
+    btn.addEventListener('click', async function () {
+      // Con confirmacion, porque sale un correo de verdad y esta llamada no se
+      // reintenta sola: si se pierde la respuesta, el correo pudo salir igual.
+      var si = await confirmar('Se va a enviar un correo de prueba con el resumen de ' +
+        'la semana. Llega solo a la cuenta dueña del reto, nunca a los participantes. ' +
+        '¿Enviarlo?', {
+        titulo: 'Correo de prueba',
+        textoSi: 'Enviar',
+        textoNo: 'Cancelar'
+      });
+      if (!si || !vigente(gen)) return;
+
+      limpiar(resultado);
+      btn.disabled = true;
+      resultado.appendChild(el('p', { clase: 'campo__ayuda' }, 'Enviando…'));
+      try {
+        var r = await pedirPruebaAvisos();
+        if (!vigente(gen)) return;
+        pintarResultadoPrueba(resultado, r);
+        avisoOk('Se pidió el correo de prueba.');
+      } catch (err) {
+        if (!vigente(gen)) return;
+        limpiar(resultado);
+        if (codigoDe(err) === 'RUTA_DESCONOCIDA') {
+          resultado.appendChild(el('p', {}, 'Este servidor todavía no tiene los avisos ' +
+            'por correo. Aparecerán en cuanto se actualice.'));
+        } else {
+          resultado.appendChild(el('p', {}, textoError(err)));
+          avisoError(textoError(err));
+        }
+      } finally {
+        if (vigente(gen)) btn.disabled = false;
+      }
+    });
+
+    cuerpo.push(btn);
+    cuerpo.push(resultado);
+
+    return tarjeta('Avisos por correo', cuerpo, [
+      el('span', {}, 'El correo de prueba llega solo a la cuenta dueña del reto, la ' +
+        'que ejecuta el backend. No le llega a ningún participante, y se manda aunque ' +
+        'los avisos estén apagados: sirve justamente para ver cómo queda antes de ' +
+        'encenderlos.')
+    ]);
+  }
+
   async function abrirModalAnular(reg, alTerminar) {
     var gen = estado.generacion;
     var caja = el('div', { clase: 'apilado' });
@@ -3047,6 +3807,7 @@
     ]));
 
     vista.appendChild(alta.caja);
+    vista.appendChild(tarjetaAvisos(gen));
     vista.appendChild(tarjetaConfig(gen));
 
     // Anulacion de registros -------------------------------------------------
@@ -3100,6 +3861,9 @@
   var VISTAS = {
     hoy: { render: vistaHoy, nav: 'hoy' },
     tablero: { render: vistaTablero, nav: 'tablero' },
+    // #/semana es de solo lectura y no revela nada que el tablero no muestre,
+    // asi que la ven todos los roles, observadores incluidos.
+    semana: { render: vistaSemana, nav: 'semana' },
     historial: { render: vistaHistorial, nav: 'historial' },
     yo: { render: vistaYo, nav: 'yo' },
     admin: { render: vistaAdmin, nav: 'admin', soloAdmin: true }
@@ -3357,6 +4121,8 @@
     nav = qs('#nav');
 
     ocultarPantallaCarga();
+    asegurarNavSemana();
+    asegurarEncabezadoSemana();
     pintarPie();
     pintarCabecera();
     mostrarNav(false);
