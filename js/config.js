@@ -16,7 +16,7 @@
   // como: yo", "Quien tiene acceso: cualquier persona"). Cambia cada vez que se
   // crea una implementacion nueva; publicarla no da acceso, porque sin token
   // valido el backend responde NO_AUTENTICADO.
-  var API_URL = 'PEGA_AQUI';
+  var API_URL = 'https://script.google.com/macros/s/AKfycbz6R4hiHMwdUAHZcDQHgxvodQ8RvGZIN3bOBmW1GEhyPg0lqDNh5EA0VSVcYqSeI3IHTQ/exec';
 
   // GOOGLE_CLIENT_ID: NO se pega aqui. Lo entrega el propio backend en la ruta
   // publica `arranque`, leyendolo de su Script Property OAUTH_CLIENT_ID. Asi el
@@ -35,7 +35,7 @@
   // la primera capa del anti-trampa dejaria de servir. Lo mismo aplica a
   // cualquier credencial: aqui no va ninguna.
 
-  var VERSION = '1.0.0';
+  var VERSION = '1.1.0';
 
   // Centinela de plantilla. Se arma por partes a proposito: la verificacion de
   // CI busca la cadena completa dentro de este archivo y debe fallar solo
