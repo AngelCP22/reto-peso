@@ -151,6 +151,45 @@ fieldset.campo { min-width: 0; }
 .cargando { min-height: 180px; border-radius: var(--r-lg); background: var(--c-superficie); }
 .modal__caja { padding: 28px 20px; }
 #modal-titulo { padding-right: 40px; }
+.novedades { display: grid; gap: 20px; }
+.novedades__version {
+  width: fit-content;
+  margin: 0;
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: var(--c-primario-suave);
+  color: var(--c-primario);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: .065em;
+}
+.novedades__intro { margin: 0; color: var(--c-texto-suave); line-height: 1.65; }
+.novedades__lista { display: grid; gap: 14px; margin: 0; padding: 0; list-style: none; }
+.novedades__lista li {
+  position: relative;
+  padding: 14px 14px 14px 46px;
+  border: 1px solid var(--c-borde);
+  border-radius: var(--r-md);
+  background: var(--c-superficie-2);
+  line-height: 1.55;
+}
+.novedades__lista li::before {
+  content: '\2713';
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--c-primario);
+  color: var(--c-sobre-primario);
+  font-size: 13px;
+  font-weight: 800;
+}
+.novedades__lista strong { display: block; margin-bottom: 2px; }
+.novedades__lista span { color: var(--c-texto-suave); }
 figcaption { line-height: 1.6; padding-top: 12px; }
 figure > div { max-width: 100%; overflow-x: auto; }
 /* Acceso: una tarjeta enfocada, sin cambiar el contenedor del botón de Google. */

@@ -47,6 +47,10 @@
   var LIMITE_FEED = 20;
   var LIMITE_FEED_ADMIN = 40;
 
+  // Cambiar esta clave cuando haya novedades que deban anunciarse otra vez.
+  // Solo se guarda que el aviso fue visto; nunca se guarda identidad ni sesión.
+  var CLAVE_NOVEDADES = 'reto-peso:novedades:1.1.0';
+
   var VENTANA_POR_DEFECTO = 7;
   var MIN_DATOS_POR_DEFECTO = 2;
 
@@ -258,7 +262,8 @@
     filtroHistorial: '',
     correosPorId: {},
     obsFotos: null,
-    arrancado: false
+    arrancado: false,
+    novedadesMostradas: false
   };
 
   function vigente(gen) {
@@ -728,6 +733,56 @@
     if (antes && typeof antes.focus === 'function' && document.contains(antes)) {
       try { antes.focus(); } catch (e) { /* el nodo ya no acepta foco */ }
     }
+  }
+
+  /**
+   * Presenta las novedades una sola vez por navegador y versión. Si el
+   * almacenamiento está bloqueado, la marca en memoria evita repetir el aviso
+   * durante la navegación actual sin interrumpir el uso de la aplicación.
+   */
+  function mostrarNovedadesSiCorresponde() {
+    if (estado.novedadesMostradas || modal.abierto) return;
+
+    var yaVistas = false;
+    try {
+      yaVistas = window.localStorage.getItem(CLAVE_NOVEDADES) === 'vista';
+    } catch (e) {
+      yaVistas = false;
+    }
+    if (yaVistas) {
+      estado.novedadesMostradas = true;
+      return;
+    }
+
+    estado.novedadesMostradas = true;
+    try { window.localStorage.setItem(CLAVE_NOVEDADES, 'vista'); } catch (e) { /* memoria basta */ }
+
+    var lista = el('ul', { clase: 'novedades__lista' }, [
+      el('li', {}, [
+        el('strong', {}, 'Edad e IMC'),
+        el('span', {}, ' Consulta estos datos en tu perfil. El IMC es informativo y no cambia el ranking.')
+      ]),
+      el('li', {}, [
+        el('strong', {}, 'Tendencia más estable'),
+        el('span', {}, ' Tu avance usa el promedio de los últimos 7 días para reducir variaciones diarias.')
+      ]),
+      el('li', {}, [
+        el('strong', {}, 'Nuevo resumen semanal'),
+        el('span', {}, ' Revisa el cambio de la semana, el ritmo y los movimientos del tablero desde Semana.')
+      ])
+    ]);
+    var contenido = el('div', { clase: 'novedades' }, [
+      el('p', { clase: 'novedades__version' }, 'NUEVA ACTUALIZACIÓN · VERSIÓN 1.1.0'),
+      el('p', { clase: 'novedades__intro' }, 'Ahora tienes más contexto para seguir tu progreso sin cambiar las reglas del reto.'),
+      lista,
+      boton('Entendido', {
+        variante: 'primario',
+        bloque: true,
+        alPulsar: cerrarModal
+      })
+    ]);
+
+    abrirModal('Tu progreso, más claro', contenido);
   }
 
   /**
@@ -4012,6 +4067,7 @@
 
     try {
       await entrada.render(gen);
+      if (vigente(gen)) mostrarNovedadesSiCorresponde();
     } catch (err) {
       if (!vigente(gen)) return;
       errorEn(vista, textoError(err), {
